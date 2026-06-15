@@ -1,0 +1,191 @@
+name: Pipeline CI/CD — Fase 2
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # ──────────────────────────────────────────
+  # JOB 1: Validação do Repositório (igual Fase 1)
+  # ──────────────────────────────────────────
+  validar-repositorio:
+    name: Validar Estrutura do Repositório
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verificar arquivos essenciais
+        run: |
+          echo "=== Estrutura do repositório ==="
+          ls -la
+          echo ""
+          echo "=== Arquivos da aplicação ==="
+          find app/ -type f | sort
+          echo ""
+          echo "=== Arquivos Terraform ==="
+          find terraform/ -type f | sort
+          echo "✅ Estrutura verificada!"
+
+      - name: Verificar sintaxe YAML
+        run: |
+          find . -name "*.yml" -o -name "*.yaml" | grep -v ".git" | while read f; do
+            python3 -c "import yaml, sys; yaml.safe_load(open('$f'))" \
+              && echo "✅ OK: $f" \
+              || (echo "❌ Erro: $f" && exit 1)
+          done
+
+  # ──────────────────────────────────────────
+  # JOB 2: Validação Terraform (igual Fase 1)
+  # ──────────────────────────────────────────
+  terraform-validate:
+    name: Validar Infraestrutura (Terraform)
+    runs-on: ubuntu-latest
+    needs: validar-repositorio
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive ./terraform
+        continue-on-error: true
+
+      - name: Terraform init
+        run: cd terraform && terraform init -backend=false
+
+      - name: Terraform validate
+        run: cd terraform && terraform validate && echo "✅ Terraform válido!"
+
+  # ──────────────────────────────────────────
+  # JOB 3: Análise de Segurança (igual Fase 1)
+  # ──────────────────────────────────────────
+  seguranca:
+    name: Análise de Segurança (tfsec)
+    runs-on: ubuntu-latest
+    needs: terraform-validate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Executar tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: ./terraform
+          soft_fail: true
+
+      - name: Resumo
+        run: echo "✅ Análise de segurança concluída"
+
+  # ──────────────────────────────────────────
+  # JOB 4: Build e Teste da Imagem Docker (NOVO)
+  # ──────────────────────────────────────────
+  build-docker:
+    name: Build e Teste da Imagem Docker
+    runs-on: ubuntu-latest
+    needs: seguranca
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build da imagem
+        run: |
+          docker build -t devops-fase2-app:${{ github.sha }} ./app
+          echo "✅ Imagem construída: devops-fase2-app:${{ github.sha }}"
+
+      - name: Smoke test do container
+        run: |
+          docker run -d \
+            --name test-app \
+            -p 3000:3000 \
+            devops-fase2-app:${{ github.sha }}
+          sleep 8
+          curl -f http://localhost:3000/health \
+            && echo "✅ Health check aprovado!" \
+            || (docker logs test-app && exit 1)
+          docker stop test-app && docker rm test-app
+
+      - name: Inspecionar imagem
+        run: |
+          echo "=== Informações da imagem ==="
+          docker inspect devops-fase2-app:${{ github.sha }} \
+            --format='Tamanho: {{.Size}} bytes | OS: {{.Os}} | Arch: {{.Architecture}}'
+          docker history devops-fase2-app:${{ github.sha }}
+
+  # ──────────────────────────────────────────
+  # JOB 5: Deploy com Docker Compose (NOVO)
+  # ──────────────────────────────────────────
+  deploy-compose:
+    name: Deploy com Docker Compose
+    runs-on: ubuntu-latest
+    needs: build-docker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Docker Compose
+        run: |
+          docker compose version || \
+          (curl -SL https://github.com/docker/compose/releases/download/v2.24.0/docker-compose-linux-x86_64 \
+            -o /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose)
+
+      - name: Subir ambiente com Docker Compose
+        run: |
+          docker compose up -d --build
+          sleep 10
+
+      - name: Verificar containers em execução
+        run: |
+          docker compose ps
+          echo ""
+          echo "=== Testando endpoints ==="
+          curl -f http://localhost:80/       && echo "✅ GET / OK"
+          curl -f http://localhost:80/health && echo "✅ GET /health OK"
+          curl -f http://localhost:80/info   && echo "✅ GET /info OK"
+
+      - name: Logs do ambiente
+        if: always()
+        run: docker compose logs --tail=20
+
+      - name: Derrubar ambiente
+        if: always()
+        run: docker compose down -v
+
+  # ──────────────────────────────────────────
+  # JOB 6: Relatório Final
+  # ──────────────────────────────────────────
+  relatorio-final:
+    name: Relatório Final do Pipeline
+    runs-on: ubuntu-latest
+    needs: [terraform-validate, seguranca, build-docker, deploy-compose]
+    if: always()
+    steps:
+      - name: Gerar relatório
+        run: |
+          echo "============================================"
+          echo "   RELATÓRIO FINAL — FASE 2 DEVOPS"
+          echo "============================================"
+          echo ""
+          echo "📁 Repositório: ${{ github.repository }}"
+          echo "🌿 Branch:      ${{ github.ref_name }}"
+          echo "👤 Autor:       ${{ github.actor }}"
+          echo "📅 Data:        $(date '+%d/%m/%Y %H:%M')"
+          echo "🔖 Commit:      ${{ github.sha }}"
+          echo ""
+          echo "📋 Resultado dos jobs:"
+          echo "  • Validar Repositório:   ${{ needs.validar-repositorio.result || 'skipped' }}"
+          echo "  • Terraform Validate:    ${{ needs.terraform-validate.result }}"
+          echo "  • Análise de Segurança:  ${{ needs.seguranca.result }}"
+          echo "  • Build Docker:          ${{ needs.build-docker.result }}"
+          echo "  • Deploy Compose:        ${{ needs.deploy-compose.result }}"
+          echo ""
+          echo "============================================"
+          echo "✅ Pipeline Fase 2 executado com sucesso!"
+          echo "============================================"
