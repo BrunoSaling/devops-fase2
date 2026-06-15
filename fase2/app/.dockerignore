@@ -1,0 +1,12 @@
+node_modules/
+.git/
+.github/
+terraform/
+*.md
+.env
+.env.*
+coverage/
+*.log
+Dockerfile*
+docker-compose*
+scripts/

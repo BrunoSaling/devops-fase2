@@ -1,0 +1,16 @@
+{
+  "name": "devops-fase2-app",
+  "version": "1.0.0",
+  "description": "API de exemplo para containerização — DevOps Fase 2 PUCRS",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
